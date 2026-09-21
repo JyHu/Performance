@@ -121,9 +121,15 @@ final class MacCADisplayLinkDriver: NSObject, PerfDisplayLinkDriver, @unchecked 
     private let lock = PerfLock()
     private var displayLink: CADisplayLink?
     private var handler: (@Sendable (PerfFrameTick) -> Void)?
+    /// 缓存的主屏幕刷新率。
+    ///
+    /// 与 iOS 分支同理：`NSScreen.main` 是 main-actor 隔离的，而 `nominalRefreshRate`
+    /// 可能被后台的聚合逻辑读取。直接 assumeIsolated 会在非主线程上崩溃，
+    /// 所以只在 `start()` 的主线程安装阶段取一次并缓存。
+    private var cachedRefreshRate: Double?
 
     var nominalRefreshRate: Double? {
-        MainActor.assumeIsolated { NSScreen.main?.maximumFramesPerSecond }.map(Double.init)
+        lock.withLock { cachedRefreshRate }
     }
 
     func start(handler: @escaping @Sendable (PerfFrameTick) -> Void) throws {
@@ -136,6 +142,7 @@ final class MacCADisplayLinkDriver: NSObject, PerfDisplayLinkDriver, @unchecked 
                 thrown = PerfDisplayLinkError.noDisplayAvailable
                 return
             }
+            lock.withLock { cachedRefreshRate = Double(screen.maximumFramesPerSecond) }
             let link = screen.displayLink(target: self, selector: #selector(onFrame(_:)))
             link.add(to: .main, forMode: .common)
             displayLink = link

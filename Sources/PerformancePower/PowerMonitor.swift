@@ -110,7 +110,7 @@ public actor PerfPowerMonitor: PerfMonitor {
     public func start() async throws {
         guard batteryToken == nil, thermalObserver == nil else { return }
 
-        enableBatteryMonitoringIfNeeded()
+        await enableBatteryMonitoringIfNeeded()
         reportThermalState(reason: "启动")
 
         if options.reportsThermalChanges {
@@ -183,18 +183,20 @@ public actor PerfPowerMonitor: PerfMonitor {
 
     // MARK: - 电量
 
-    private func enableBatteryMonitoringIfNeeded() {
+    private func enableBatteryMonitoringIfNeeded() async {
         guard options.tracksBattery else { return }
         #if os(iOS)
-        // 不开这个开关，batteryLevel 恒为 -1
-        MainActor.assumeIsolated {
+        // 不开这个开关，batteryLevel 恒为 -1。
+        // 这里不能用 MainActor.assumeIsolated：本方法从 actor 的 start() 调用，
+        // 执行器不是主线程，assumeIsolated 会直接触发运行时崩溃。
+        await MainActor.run {
             UIDevice.current.isBatteryMonitoringEnabled = true
         }
         #endif
     }
 
-    private func sampleBattery(at tick: PerfTick) {
-        let reading = Self.readBattery()
+    private func sampleBattery(at tick: PerfTick) async {
+        let reading = await Self.readBattery()
 
         let windowNanos = previousBatterySampleUptime.map {
             tick.uptimeNanos > $0 ? tick.uptimeNanos - $0 : 0
@@ -223,9 +225,11 @@ public actor PerfPowerMonitor: PerfMonitor {
     }
 
     /// 读取电量。平台差异收敛在这里。
-    private static func readBattery() -> (levelPercent: Double?, isCharging: Bool?) {
+    private static func readBattery() async -> (levelPercent: Double?, isCharging: Bool?) {
         #if os(iOS)
-        let device = MainActor.assumeIsolated { () -> (Float, UIDevice.BatteryState) in
+        // 同样不能用 assumeIsolated：本方法从调度器的后台回调链调用，
+        // 不保证在主线程。UIDevice 的 batteryLevel 访问需要主线程。
+        let device = await MainActor.run { () -> (Float, UIDevice.BatteryState) in
             (UIDevice.current.batteryLevel, UIDevice.current.batteryState)
         }
         // 监测未开启或取不到时系统返回 -1，不能当成 0% 上报
